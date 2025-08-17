@@ -1,0 +1,34 @@
+# InsureSense 360 Environment Configuration
+
+# LLM Provider Selection
+LLM_PROVIDER=together  # "openai", "together", or "local"
+
+# OpenAI Configuration (Optional - for enhanced RAG responses)
+OPENAI_API_KEY=your_openai_api_key_here
+OPENAI_MODEL=gpt-3.5-turbo
+
+# Together AI Configuration (for Meta Llama)
+TOGETHER_API_KEY=your_together_api_key_here
+TOGETHER_MODEL=meta-llama/Llama-3.1-8B-Instruct
+TOGETHER_BASE_URL=https://api.together.xyz
+
+# Vector Database Configuration
+EMBEDDING_MODEL=all-MiniLM-L6-v2
+VECTOR_DIMENSION=384
+FAISS_INDEX_PATH=data/faiss_index
+
+# File Storage Paths
+UPLOAD_DIR=data/uploads
+PROCESSED_DIR=data/processed
+IRDAI_POLICIES_PATH=data/irdai_policies
+
+# API Configuration
+DEBUG=false
+LOG_LEVEL=INFO
+
+# Azure Configuration (for future migration)
+# AZURE_OPENAI_ENDPOINT=your_azure_openai_endpoint
+# AZURE_OPENAI_API_KEY=your_azure_openai_key
+# AZURE_COGNITIVE_SEARCH_ENDPOINT=your_search_endpoint
+# AZURE_COGNITIVE_SEARCH_API_KEY=your_search_key
+# AZURE_STORAGE_CONNECTION_STRING=your_storage_connection_string

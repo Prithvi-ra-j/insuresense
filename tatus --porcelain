@@ -1,0 +1,473 @@
+[1mdiff --git a/src/main.py b/src/main.py[m
+[1mindex 3713335..a2d13ed 100644[m
+[1m--- a/src/main.py[m
+[1m+++ b/src/main.py[m
+[36m@@ -1,515 +1,6 @@[m
+[31m-"""[m
+[31m-FastAPI backend for InsureSense 360[m
+[31m-Main application with all endpoints[m
+[31m-"""[m
+[31m-import os[m
+[31m-import logging[m
+[31m-from pathlib import Path[m
+[31m-from typing import List, Optional[m
+[31m-from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, BackgroundTasks[m
+[31m-from fastapi.middleware.cors import CORSMiddleware[m
+[31m-from fastapi.responses import JSONResponse[m
+[31m-from pydantic import BaseModel, Field[m
+[31m-import uvicorn[m
+[31m-[m
+[31m-# Import our modules[m
+[31m-from .config import settings[m
+[31m-from .document_processor import DocumentProcessor, InsurancePolicy[m
+[31m-from .vector_store import VectorStore, SearchResult[m
+[31m-from .rag_chatbot import RAGChatbot, ChatResponse[m
+[31m-[m
+[31m-# Configure logging[m
+[31m-logging.basicConfig(level=logging.INFO)[m
+[31m-logger = logging.getLogger(__name__)[m
+[31m-[m
+[31m-# Initialize FastAPI app[m
+[31m-app = FastAPI([m
+[31m-    title=settings.app_name,[m
+[31m-    version=settings.app_version,[m
+[31m-    description="AI-Powered Insurance Platform with LangChain RAG Chatbot",[m
+[31m-    docs_url="/docs",[m
+[31m-    redoc_url="/redoc"[m
+[31m-)[m
+[31m-[m
+[31m-# Add CORS middleware[m
+[31m-app.add_middleware([m
+[31m-    CORSMiddleware,[m
+[31m-    allow_origins=["*"],[m
+[31m-    allow_credentials=True,[m
+[31m-    allow_methods=["*"],[m
+[31m-    allow_headers=["*"],[m
+[31m-)[m
+[31m-[m
+[31m-# Pydantic models for API requests/responses[m
+[31m-class PolicyUploadResponse(BaseModel):[m
+[31m-    policy_id: str[m
+[31m-    insurer_name: str[m
+[31m-    policy_type: str[m
+[31m-    document_title: str[m
+[31m-    sections_count: int[m
+[31m-    file_path: str[m
+[31m-    message: str[m
+[31m-[m
+[31m-class PolicySearchRequest(BaseModel):[m
+[31m-    query: str = Field(..., description="Search query")[m
+[31m-    top_k: int = Field(5, description="Number of results to return")[m
+[31m-    policy_types: Optional[List[str]] = Field(None, description="Filter by policy types")[m
+[31m-    insurers: Optional[List[str]] = Field(None, description="Filter by insurers")[m
+[31m-[m
+[31m-class PolicySearchResult(BaseModel):[m
+[31m-    policy_id: str[m
+[31m-    insurer_name: str[m
+[31m-    policy_type: str[m
+[31m-    document_title: str[m
+[31m-    section_title: str[m
+[31m-    section_content: str[m
+[31m-    section_type: str[m
+[31m-    similarity_score: float[m
+[31m-    page_number: int[m
+[31m-[m
+[31m-class ChatRequest(BaseModel):[m
+[31m-    message: str = Field(..., description="User message")[m
+[31m-    conversation_id: Optional[str] = Field(None, description="Conversation ID for continuity")[m
+[31m-    policy_types: Optional[List[str]] = Field(None, description="Filter by policy types")[m
+[31m-    insurers: Optional[List[str]] = Field(None, description="Filter by insurers")[m
+[31m-    max_sources: int = Field(3, description="Maximum number of sources to use")[m
+[31m-[m
+[31m-class ChatResponseModel(BaseModel):[m
+[31m-    answer: str[m
+[31m-    sources: List[dict][m
+[31m-    confidence_score: float[m
+[31m-    search_query: str[m
+[31m-    conversation_id: Optional[str][m
+[31m-    follow_up_questions: Optional[List[str]][m
+[31m-[m
+[31m-class SystemStatsResponse(BaseModel):[m
+[31m-    vector_store_stats: dict[m
+[31m-    document_processor_stats: dict[m
+[31m-    chatbot_stats: dict[m
+[31m-    system_info: dict[m
+[31m-[m
+[31m-# Global components (singleton pattern)[m
+[31m-_document_processor = None[m
+[31m-_vector_store = None[m
+[31m-_rag_chatbot = None[m
+[31m-[m
+[31m-def get_components():[m
+[31m-    """Get or create singleton components"""[m
+[31m-    global _document_processor, _vector_store, _rag_chatbot[m
+[31m-    [m
+[31m-    if _document_processor is None:[m
+[31m-        _document_processor = DocumentProcessor()[m
+[31m-        logger.info("Initialized DocumentProcessor")[m
+[31m-    [m
+[31m-    if _vector_store is None:[m
+[31m-        _vector_store = VectorStore()[m
+[31m-        logger.info("Initialized VectorStore")[m
+[31m-    [m
+[31m-    if _rag_chatbot is None:[m
+[31m-        _rag_chatbot = RAGChatbot(_vector_store)[m
+[31m-        logger.info("Initialized RAGChatbot")[m
+[31m-    [m
+[31m-    return _document_processor, _vector_store, _rag_chatbot[m
+[31m-[m
+[31m-# Health check endpoint[m
+[31m-@app.get("/health")[m
+[31m-async def health_check():[m
+[31m-    """Health check endpoint"""[m
+[31m-    return {[m
+[31m-        "status": "healthy",[m
+[31m-        "app_name": settings.app_name,[m
+[31m-        "version": settings.app_version,[m
+[31m-        "timestamp": "2024-01-01T00:00:00Z"[m
+[31m-    }[m
+[31m-[m
+[31m-# Policy upload endpoint[m
+[31m-@app.post("/upload/policy", response_model=PolicyUploadResponse)[m
+[31m-async def upload_policy([m
+[31m-    file: UploadFile = File(...),[m
+[31m-    background_tasks: BackgroundTasks = None,[m
+[31m-    components: tuple = Depends(get_components)[m
+[31m-):[m
+[31m-    """Upload and process an insurance policy document"""[m
+[31m-    document_processor, vector_store, _ = components[m
+[31m-    [m
+[31m-    try:[m
+[31m-        # Validate file type[m
+[31m-        allowed_extensions = {'.pdf', '.txt', '.md', '.html', '.htm'}[m
+[31m-        file_extension = Path(file.filename).suffix.lower()[m
+[31m-        [m
+[31m-        if file_extension not in allowed_extensions:[m
+[31m-            raise HTTPException([m
+[31m-                status_code=400,[m
+[31m-                detail=f"Unsupported file type. Allowed: {', '.join(allowed_extensions)}"[m
+[31m-            )[m
+[31m-        [m
+[31m-        # Save uploaded file[m
+[31m-        upload_dir = Path(settings.upload_dir)[m
+[31m-        upload_dir.mkdir(parents=True, exist_ok=True)[m
+[31m-        [m
+[31m-        file_path = upload_dir / file.filename[m
+[31m-        with open(file_path, "wb") as buffer:[m
+[31m-            content = await file.read()[m
+[31m-            buffer.write(content)[m
+[31m-        [m
+[31m-        logger.info(f"Saved uploaded file: {file_path}")[m
+[31m-        [m
+[31m-        # Process document[m
+[31m-        policy = document_processor.process_document(str(file_path))[m
+[31m-        [m
+[31m-        # Save processed policy[m
+[31m-        processed_path = document_processor.save_processed_policy(policy)[m
+[31m-        [m
+[31m-        # Add to vector store[m
+[31m-        vector_store.add_policy(policy)[m
+[31m-        [m
+[31m-        return PolicyUploadResponse([m
+[31m-            policy_id=policy.policy_id,[m
+[31m-            insurer_name=policy.insurer_name,[m
+[31m-            policy_type=policy.policy_type,[m
+[31m-            document_title=policy.document_title,[m
+[31m-            sections_count=len(policy.sections),[m
+[31m-            file_path=str(file_path),[m
+[31m-            message="Policy processed and added to vector store successfully"[m
+[31m-        )[m
+[31m-        [m
+[31m-    except Exception as e:[m
+[31m-        logger.error(f"Error processing uploaded file: {e}")[m
+[31m-        raise HTTPException(status_code=500, detail=str(e))[m
+[31m-[m
+[31m-# IRDAI policy processing endpoint[m
+[31m-@app.post("/process/irdai", response_model=List[PolicyUploadResponse])[m
+[31m-async def process_irdai_policies([m
+[31m-    max_policies: int = 10,[m
+[31m-    components: tuple = Depends(get_components)[m
+[31m-):[m
+[31m-    """Download and process IRDAI policies"""[m
+[31m-    document_processor, vector_store, _ = components[m
+[31m-    [m
+[31m-    try:[m
+[31m-        # Download sample policies[m
+[31m-        downloaded_files = document_processor.download_irdai_policies(max_policies)[m
+[31m-        [m
+[31m-        # Process each file[m
+[31m-        policies = [][m
+[31m-        for file_path in downloaded_files:[m
+[31m-            try:[m
+[31m-                policy = document_processor.process_document(file_path)[m
+[31m-                policies.append(policy)[m
+[31m-                [m
+[31m-                # Save processed policy[m
+[31m-                document_processor.save_processed_policy(policy)[m
+[31m-                [m
+[31m-            except Exception as e:[m
+[31m-                logger.error(f"Failed to process {file_path}: {e}")[m
+[31m-                continue[m
+[31m-        [m
+[31m-        # Add all policies to vector store in batch[m
+[31m-        if policies:[m
+[31m-            vector_store.add_policies_batch(policies)[m
+[31m-        [m
+[31m-        # Create response[m
+[31m-        responses = [][m
+[31m-        for policy in policies:[m
+[31m-            response = PolicyUploadResponse([m
+[31m-                policy_id=policy.policy_id,[m
+[31m-                insurer_name=policy.insurer_name,[m
+[31m-                policy_type=policy.policy_type,[m
+[31m-                document_title=policy.document_title,[m
+[31m-                sections_count=len(policy.sections),[m
+[31m-                file_path=policy.file_path,[m
+[31m-                message="IRDAI policy processed successfully"[m
+[31m-            )[m
+[31m-            responses.append(response)[m
+[31m-        [m
+[31m-        logger.info(f"Processed {len(policies)} IRDAI policies")[m
+[31m-        return responses[m
+[31m-        [m
+[31m-    except Exception as e:[m
+[31m-        logger.error(f"Error processing IRDAI policies: {e}")[m
+[31m-        raise HTTPException(status_code=500, detail=str(e))[m
+[31m-[m
+[31m-# Policy search endpoint[m
+[31m-@app.post("/search/policies", response_model=List[PolicySearchResult])[m
+[31m-async def search_policies([m
+[31m-    request: PolicySearchRequest,[m
+[31m-    components: tuple = Depends(get_components)[m
+[31m-):[m
+[31m-    """Search for policies using semantic similarity"""[m
+[31m-    _, vector_store, _ = components[m
+[31m-    [m
+[31m-    try:[m
+[31m-        search_results = vector_store.search([m
+[31m-            query=request.query,[m
+[31m-            top_k=request.top_k,[m
+[31m-            policy_types=request.policy_types,[m
+[31m-            insurers=request.insurers[m
+[31m-        )[m
+[31m-        [m
+[31m-        # Convert to response model[m
+[31m-        results = [][m
+[31m-        for result in search_results:[m
+[31m-            search_result = PolicySearchResult([m
+[31m-                policy_id=result.policy_id,[m
+[31m-                insurer_name=result.insurer_name,[m
+[31m-                policy_type=result.policy_type,[m
+[31m-                document_title=result.document_title,[m
+[31m-                section_title=result.section_title,[m
+[31m-                section_content=result.section_content,[m
+[31m-                section_type=result.section_type,[m
+[31m-                similarity_score=result.similarity_score,[m
+[31m-                page_number=result.page_number[m
+[31m-            )[m
+[31m-            results.append(search_result)[m
+[31m-        [m
+[31m-        return results[m
+[31m-        [m
+[31m-    except Exception as e:[m
+[31m-        logger.error(f"Error searching policies: {e}")[m
+[31m-        raise HTTPException(status_code=500, detail=str(e))[m
+[31m-[m
+[31m-# Chat endpoint[m
+[31m-@app.post("/chat", response_model=ChatResponseModel)[m
+[31m-async def chat_with_bot([m
+[31m-    request: ChatRequest,[m
+[31m-    components: tuple = Depends(get_components)[m
+[31m-):[m
+[31m-    """Chat with the RAG chatbot"""[m
+[31m-    _, _, rag_chatbot = components[m
+[31m-    [m
+[31m-    try:[m
+[31m-        response = rag_chatbot.chat([m
+[31m-            user_message=request.message,[m
+[31m-            conversation_id=request.conversation_id,[m
+[31m-            policy_types=request.policy_types,[m
+[31m-            insurers=request.insurers,[m
+[31m-            max_sources=request.max_sources[m
+[31m-        )[m
+[31m-        [m
+[31m-        return ChatResponseModel([m
+[31m-            answer=response.answer,[m
+[31m-            sources=response.sources,[m
+[31m-            confidence_score=response.confidence_score,[m
+[31m-            search_query=response.search_query,[m
+[31m-            conversation_id=response.conversation_id,[m
+[31m-            follow_up_questions=response.follow_up_questions[m
+[31m-        )[m
+[31m-        [m
+[31m-    except Exception as e:[m
+[31m-        logger.error(f"Error in chat: {e}")[m
+[31m-        raise HTTPException(status_code=500, detail=str(e))[m
+[31m-[m
+[31m-# Chat suggestions endpoint[m
+[31m-@app.get("/chat/suggestions")[m
+[31m-async def get_chat_suggestions([m
+[31m-    topic: Optional[str] = None,[m
+[31m-    components: tuple = Depends(get_components)[m
+[31m-):[m
+[31m-    """Get suggested questions for the chatbot"""[m
+[31m-    _, _, rag_chatbot = components[m
+[31m-    [m
+[31m-    try:[m
+[31m-        suggestions = rag_chatbot.suggest_questions(topic)[m
+[31m-        return {"suggestions": suggestions}[m
+[31m-        [m
+[31m-    except Exception as e:[m
+[31m-        logger.error(f"Error getting chat suggestions: {e}")[m
+[31m-        raise HTTPException(status_code=500, detail=str(e))[m
+[31m-[m
+[31m-# Conversation history endpoint[m
+[31m-@app.get("/chat/history/{conversation_id}")[m
+[31m-async def get_conversation_history([m
+[31m-    conversation_id: str,[m
+[31m-    components: tuple = Depends(get_components)[m
+[31m-):[m
+[31m-    """Get conversation history for a specific conversation"""[m
+[31m-    _, _, rag_chatbot = components[m
+[31m-    [m
+[31m-    try:[m
+[31m-        history = rag_chatbot.get_conversation_history(conversation_id)[m
+[31m-        [m
+[31m-        # Convert to serializable format[m
+[31m-        history_data = [][m
+[31m-        for message in history:[m
+[31m-            history_data.append({[m
+[31m-                "role": message.role,[m
+[31m-                "content": message.content,[m
+[31m-                "timestamp": message.timestamp,[m
+[31m-                "metadata": message.metadata[m
+[31m-            })[m
+[31m-        [m
+[31m-        return {"conversation_id": conversation_id, "history": history_data}[m
+[31m-        [m
+[31m-    except Exception as e:[m
+[31m-        logger.error(f"Error getting conversation history: {e}")[m
+[31m-        raise HTTPException(status_code=500, detail=str(e))[m
+[31m-[m
+[31m-# Clear conversation endpoint[m
+[31m-@app.delete("/chat/history/{conversation_id}")[m
+[31m-async def clear_conversation([m
+[31m-    conversation_id: str,[m
+[31m-    components: tuple = Depends(get_components)[m
+[31m-):[m
+[31m-    """Clear a specific conversation"""[m
+[31m-    _, _, rag_chatbot = components[m
+[31m-    [m
+[31m-    try:[m
+[31m-        rag_chatbot.clear_conversation(conversation_id)[m
+[31m-        return {"message": f"Conversation {conversation_id} cleared successfully"}[m
+[31m-        [m
+[31m-    except Exception as e:[m
+[31m-        logger.error(f"Error clearing conversation: {e}")[m
+[31m-        raise HTTPException(status_code=500, detail=str(e))[m
+[31m-[m
+[31m-# Vector store statistics endpoint[m
+[31m-@app.get("/system/stats", response_model=SystemStatsResponse)[m
+[31m-async def get_system_statistics(components: tuple = Depends(get_components)):[m
+[31m-    """Get comprehensive system statistics"""[m
+[31m-    document_processor, vector_store, rag_chatbot = components[m
+[31m-    [m
+[31m-    try:[m
+[31m-        # Get vector store stats[m
+[31m-        vector_stats = vector_store.get_statistics()[m
+[31m-        [m
+[31m-        # Get document processor stats[m
+[31m-        doc_stats = document_processor.get_processing_stats()[m
+[31m-        [m
+[31m-        # Get chatbot stats[m
+[31m-        chat_stats = rag_chatbot.get_conversation_stats()[m
+[31m-        [m
+[31m-        # System info[m
+[31m-        system_info = {[m
+[31m-            "app_name": settings.app_name,[m
+[31m-            "version": settings.app_version,[m
+[31m-            "embedding_model": settings.embedding_model,[m
+[31m-            "vector_store_type": getattr(vector_store, 'vector_store_type', 'unknown'),[m
+[31m-            "openai_available": bool(settings.openai_api_key),[m
+[31m-            "langchain_version": "0.1.0"  # You could get this dynamically[m
+[31m-        }[m
+[31m-        [m
+[31m-        return SystemStatsResponse([m
+[31m-            vector_store_stats=vector_stats,[m
+[31m-            document_processor_stats=doc_stats,[m
+[31m-            chatbot_stats=chat_stats,[m
+[31m-            system_info=system_info[m
+[31m-        )[m
+[31m-        [m
+[31m-    except Exception as e:[m
+[31m-        logger.error(f"Error getting system statistics: {e}")[m
+[31m-        raise HTTPException(status_code=500, detail=str(e))[m
+[31m-[m
+[31m-# Rebuild vector index endpoint[m
+[31m-@app.post("/system/rebuild-index")[m
+[31m-async def rebuild_vector_index(components: tuple = Depends(get_components)):[m
+[31m-    """Rebuild the entire vector index from processed policies"""[m
+[31m-    document_processor, vector_store, _ = components[m
+[31m-    [m
+[31m-    try:[m
+[31m-        # Clear existing index[m
+[31m-        vector_store.clear_index()[m
+[31m-        [m
+[31m-        # Get all processed policies[m
+[31m-        processed_dir = Path(settings.processed_dir)[m
+[31m-        if not processed_dir.exists():[m
+[31m-            return {"message": "No processed policies found"}[m
+[31m-        [m
+[31m-        # Load and reprocess all policies[m
+[31m-        policies = [][m
+[31m-        for json_file in processed_dir.glob("*.json"):[m
+[31m-            try:[m
+[31m-                with open(json_file, 'r', encoding='utf-8') as f:[m
+[31m-                    policy_data = json.load(f)[m
+[31m-                    [m
+[31m-                # Recreate policy object[m
+[31m-                policy = InsurancePolicy([m
+[31m-                    policy_id=policy_data['policy_id'],[m
+[31m-                    insurer_name=policy_data['insurer_name'],[m
+[31m-                    policy_type=policy_data['policy_type'],[m
+[31m-                    document_title=policy_data['document_title'],[m
+[31m-                    total_pages=policy_data['total_pages'],[m
+[31m-                    sections=policy_data['sections'],[m
+[31m-                    extracted_text=policy_data['extracted_text'],[m
+[31m-                    metadata=policy_data['metadata'],[m
+[31m-                    created_at=policy_data['created_at'],[m
+[31m-                    file_path=policy_data['file_path'][m
+[31m-                )[m
+[31m-                policies.append(policy)[m
+[31m-                [m
+[31m-            except Exception as e:[m
+[31m-                logger.error(f"Error loading {json_file}: {e}")[m
+[31m-                continue[m
+[31m-        [m
+[31m-        # Add all policies to vector store[m
+[31m-        if policies:[m
+[31m-            vector_store.add_policies_batch(policies)[m
+[31m-            logger.info(f"Rebuilt vector index with {len(policies)} policies")[m
+[31m-            return {"message": f"Vector index rebuilt successfully with {len(policies)} policies"}[m
+[31m-        else:[m
+[31m-            return {"message": "No valid policies found for rebuilding"}[m
+[31m-        [m
+[31m-    except Exception as e:[m
+[31m-        logger.error(f"Error rebuilding vector index: {e}")[m
+[31m-        raise HTTPException(status_code=500, detail=str(e))[m
+[31m-[m
+[31m-# Export embeddings endpoint[m
+[31m-@app.post("/system/export-embeddings")[m
+[31m-async def export_embeddings([m
+[31m-    output_path: str = "data/embeddings_export.json",[m
+[31m-    components: tuple = Depends(get_components)[m
+[31m-):[m
+[31m-    """Export embeddings and metadata for analysis"""[m
+[31m-    _, vector_store, _ = components[m
+[31m-    [m
+[31m-    try:[m
+[31m-        export_path = vector_store.export_embeddings(output_path)[m
+[31m-        [m
+[31m-        if export_path:[m
+[31m-            return {[m
+[31m-                "message
